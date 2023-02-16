@@ -320,6 +320,55 @@ class HeightDepthTransform(DepthLSSTransform):
         xavier_init(self.query_embedding, distribution='uniform', bias=0.)
         self.positional_encoding = LearnedPositionalEncoding(self.C // 2, self.bev_h, self.bev_w)
 
+    @staticmethod
+    def get_reference_points(H, W, Z=8, bs=1, device='cuda', dtype=torch.float):
+        """
+        Args:
+            H, W: spatial shape of bev.
+            Z: hight of pillar.
+            D: sample D points uniformly from each pillar.
+            device (obj:`device`): The device where
+                reference_points should be.
+        Returns:
+            Tensor: reference points used in decoder, has \
+                shape (bs, num_keys, num_levels, 2).
+        """
+        ref_y, ref_x = torch.meshgrid(
+            torch.linspace(
+                0.5, H - 0.5, H, dtype=dtype, device=device),
+            torch.linspace(
+                0.5, W - 0.5, W, dtype=dtype, device=device)
+        )
+        ref_y = ref_y.reshape(-1)[None] / H
+        ref_x = ref_x.reshape(-1)[None] / W
+        ref_2d = torch.stack((ref_x, ref_y), -1)
+        ref_2d = ref_2d.repeat(bs, 1, 1).unsqueeze(1)
+        return ref_2d    @staticmethod
+    
+    @staticmethod
+    def get_reference_points(H, W, Z=8, bs=1, device='cuda', dtype=torch.float):
+        """
+        Args:
+            H, W: spatial shape of bev.
+            Z: hight of pillar.
+            D: sample D points uniformly from each pillar.
+            device (obj:`device`): The device where
+                reference_points should be.
+        Returns:
+            Tensor: reference points used in decoder, has \
+                shape (bs, num_keys, num_levels, 2).
+        """
+        ref_y, ref_x = torch.meshgrid(
+            torch.linspace(
+                0.5, H - 0.5, H, dtype=dtype, device=device),
+            torch.linspace(
+                0.5, W - 0.5, W, dtype=dtype, device=device)
+        )
+        ref_y = ref_y.reshape(-1)[None] / H
+        ref_x = ref_x.reshape(-1)[None] / W
+        ref_2d = torch.stack((ref_x, ref_y), -1)
+        ref_2d = ref_2d.repeat(bs, 1, 1).unsqueeze(1)
+        return ref_2d
     @force_fp32()
     def get_feats_depth(self, x, d):
         B, N, C, fH, fW = x.shape # torch.Size([1, 6, 256, 32, 88])
@@ -340,58 +389,23 @@ class HeightDepthTransform(DepthLSSTransform):
         self, points, img_feats, img_metas, lidar2img, lidar2camera, camera_intrinsics, **kwargs
     ):
         batch_size = len(points)
-        num_cam = len(img_metas[0]['img_shape'])
-        depth = torch.zeros(batch_size, num_cam, 1, *self.image_size).to(points[0].device)
+        
+        if(isinstance(img_feats, list)):
+            img_feat=[]
+            for i in range(len(img_feats)):
+                B, N, C, fH, fW = img_feats[i].shape
+                img_feat_tmp = img_feats[i].view(B * N, C, fH, fW)
+                img_feat.append(img_feat_tmp)
+            dtype = img_feat_tmp.dtype
+            device = img_feat_tmp.device
+        else:  
+            B, N, C, fH, fW = img_feats.shape
+            img_feat = img_feats.view(B * N, C, fH, fW)
+            device = img_feat_tmp.device
+            dtype = img_feat.dtype        
 
-        for b in range(batch_size):
-            # cur_coords = points[b][:, :3].transpose(1, 0)
-            cur_coords = apply_3d_transformation(points[b][:, :3].view(-1, 3), 'LIDAR', img_metas[b], reverse=True)
-            cur_coords = cur_coords.transpose(1, 0)
-            # cur_img_aug_matrix = img_aug_matrix[b]
-            # cur_lidar_aug_matrix = lidar_aug_matrix[b] # not used?
-            cur_lidar2image = lidar2img[b].float()
-
-            # lidar2image
-            cur_coords = cur_lidar2image[:, :3, :3].matmul(cur_coords) #投影到6个相机上
-            cur_coords += cur_lidar2image[:, :3, 3].reshape(-1, 3, 1) # ?
-            # get 2d coords
-            dist = cur_coords[:, 2, :] # 相机坐标系下的深度
-            cur_coords[:, 2, :] = torch.clamp(cur_coords[:, 2, :], 1e-5, 1e5)
-            cur_coords[:, :2, :] /= cur_coords[:, 2:3, :] # 这都是投影到图像上的点了
-
-            # imgaug
-            # cur_coords = cur_img_aug_matrix[:, :3, :3].matmul(cur_coords) # todo?
-            # cur_coords += cur_img_aug_matrix[:, :3, 3].reshape(-1, 3, 1)
-            cur_coords = cur_coords[:, :2, :].transpose(1, 2)
-
-            # normalize coords for grid sample
-            cur_coords = cur_coords[..., [1, 0]]
-
-            on_img = (
-                (cur_coords[..., 0] < self.image_size[0])
-                & (cur_coords[..., 0] >= 0)
-                & (cur_coords[..., 1] < self.image_size[1])
-                & (cur_coords[..., 1] >= 0)
-            )
-            for c in range(num_cam):
-                masked_coords = cur_coords[c, on_img[c]].long()
-                masked_dist = dist[c, on_img[c]]
-                depth[b, c, 0, masked_coords[:, 0], masked_coords[:, 1]] = masked_dist
-
-        depth_resize_list = []
-        for i in range(batch_size):
-            out = F.interpolate(depth[i], (self.feature_size[0]*4, self.feature_size[1]*4), mode='bilinear', align_corners=False)
-            depth_resize_list.append(out)
-            
-        depth = torch.stack(depth_resize_list)
-
-        img_feat, depth_prob = self.get_feats_depth(img_feats, depth)   
-        # B, N, C, fH, fW = img_feats.shape
-        # img_feat = img_feats.view(B * N, C, fH, fW)
-
-        dtype = img_feat.dtype
         ref_2d = self.get_reference_points(self.bev_h, self.bev_w, 1, 
-        bs=batch_size, device=img_feat.device, dtype=dtype)
+        bs=batch_size, device=device, dtype=dtype)
         
         ref_3d = torch.cat((ref_2d, torch.ones_like(ref_2d[..., :1])*0.55), -1)
 
@@ -404,7 +418,7 @@ class HeightDepthTransform(DepthLSSTransform):
         #B, HW, C
 
         for ihr in self.ihr_layers:
-            output, ref_points = ihr(img_feat, bev_queries, bev_pos, ref_3d, self.pc_range, lidar2img, self.bev_h, self.bev_w, depth_prob, img_metas, **kwargs)
+            output, ref_points = ihr(img_feat, bev_queries, bev_pos, ref_3d, self.pc_range, lidar2img, self.bev_h, self.bev_w, None, img_metas, **kwargs)
             bev_queries = output 
             ref_3d = ref_points
         output = output.permute(0, 2, 1).contiguous().view(batch_size, -1, self.bev_h, self.bev_w)
@@ -522,22 +536,48 @@ class IPFLayer(IHRLayer):
         img_offset = self.img_offset(bev_queries) # B, HW, 2N
         # image_shapes=img_metas[0]['img_shape'][0]
 
-        reference_points_3d, output, bev_mask = feature_sampling(
-            inputs_img, reference_points, depth_prob, img_offset, point_cloud_range, lidar_to_img, img_metas)
+        if(isinstance(inputs_img, list)):
+            reference_points_3d, output, bev_mask = feature_sampling(
+            inputs_img[0], reference_points, depth_prob, img_offset, point_cloud_range, lidar_to_img[:,0:2,...], img_metas)
+            output = torch.nan_to_num(output)
+            bev_mask = torch.nan_to_num(bev_mask)
+            output= output * bev_mask
+            
+            reference_points_3d, output_side, bev_mask = feature_sampling(
+            inputs_img[1], reference_points, depth_prob, None, point_cloud_range, lidar_to_img[:,2:4,...], img_metas)
+            output_side = torch.nan_to_num(output_side)
+            bev_mask = torch.nan_to_num(bev_mask)
+            output_side= output_side * bev_mask
+            
+            if len(inputs_img) > 2:
+                reference_points_3d, output_rear, bev_mask = feature_sampling(
+                inputs_img[2], reference_points, depth_prob, None, point_cloud_range, lidar_to_img[:,4:6,...], img_metas)
+                inputs_img = torch.nan_to_num(output_rear)
+                bev_mask = torch.nan_to_num(bev_mask)
+                output_rear= output_rear * bev_mask
+            
+                output = torch.cat((output, output_side, output_rear), -2)
+            else:
+                output = torch.cat((output, output_side), -2)
+            output = output * attention_weights.sigmoid()
+        else:
+            reference_points_3d, output, bev_mask = feature_sampling(
+                inputs_img, reference_points, depth_prob, img_offset, point_cloud_range, lidar_to_img, img_metas)
 
-        output = torch.nan_to_num(output)
-        bev_mask = torch.nan_to_num(bev_mask)
-        attention_weights = attention_weights.sigmoid()*bev_mask
-        output = output * attention_weights
+            output = torch.nan_to_num(output)
+            bev_mask = torch.nan_to_num(bev_mask)
+            attention_weights = attention_weights.sigmoid()*bev_mask
+            output = output * attention_weights
+
         #  B,C ,Nq, N, D
         # output = output.permute(0, 2, 1, 3, 4).flatten(2).permute(0, 2, 1).unsqueeze(-1)
         # output = self.stereo_consist(output).squeeze(-1)
         output = output.squeeze(-1).sum(-1)
 
-        output = output.permute(0, 2, 1).contiguous()
-        output = self.output_proj(output)
-        output = self.dropout(output) + inp_residual
-        output = output.permute(0, 2, 1).contiguous()
+        # output = output.permute(0, 2, 1).contiguous()
+        # output = self.output_proj(output)
+        # output = self.dropout(output) + inp_residual
+        # output = output.permute(0, 2, 1).contiguous()
 
         # B, C, HW
         B, C = output.size()[:2]
@@ -560,6 +600,7 @@ class HeightDepthFusion(HeightDepthTransform):
         self,
         in_channels: int,
         out_channels: int,
+        used_cameras: int,
         image_size: Tuple[int, int],
         feature_size: Tuple[int, int],
         point_cloud_range: Tuple[float, float, float, float, float, float],
@@ -574,6 +615,7 @@ class HeightDepthFusion(HeightDepthTransform):
         super().__init__(
             in_channels=in_channels,
             out_channels=out_channels,
+            used_cameras=used_cameras,
             image_size=image_size,
             feature_size=feature_size,
             point_cloud_range=point_cloud_range,
@@ -594,68 +636,32 @@ class HeightDepthFusion(HeightDepthTransform):
             in_filters = self.C * sensor_cnt
             out_filters = self.C
             ipf_layers.append(
-                IPFLayer(in_filters, out_filters, self.only_use_height, num_cams=2)
+                IPFLayer(in_filters, out_filters, self.only_use_height, num_cams=used_cameras)
             )
         self.ihr_layers = nn.ModuleList(ipf_layers)
 
     @force_fp32()
     def forward(
-        self, points, img_feats, pts_feats, rad_feats, img_metas, lidar2img, lidar2camera, camera_intrinsics, **kwargs
+        self, points, img_feats, pts_feats, rad_feats, img_metas, lidar2img, **kwargs
     ):
 
         batch_size = len(points)
-        num_cam = len(img_metas[0]['img_shape'])
-        depth = torch.zeros(batch_size, num_cam, 1, *self.image_size).to(points[0].device)
+        if(isinstance(img_feats, list)):
+            img_feat=[]
+            for i in range(len(img_feats)):
+                B, N, C, fH, fW = img_feats[i].shape
+                img_feat_tmp = img_feats[i].view(B * N, C, fH, fW)
+                img_feat.append(img_feat_tmp)
+            dtype = img_feat_tmp.dtype
+            device = img_feat_tmp.device
+        else:  
+            B, N, C, fH, fW = img_feats.shape
+            img_feat = img_feats.view(B * N, C, fH, fW)
+            device = img_feat_tmp.device
+            dtype = img_feat.dtype  
 
-        for b in range(batch_size):
-            # cur_coords = points[b][:, :3].transpose(1, 0)
-            cur_coords = apply_3d_transformation(points[b][:, :3].view(-1, 3), 'LIDAR', img_metas[b], reverse=True)
-            cur_coords = cur_coords.transpose(1, 0)
-            # cur_img_aug_matrix = img_aug_matrix[b]
-            # cur_lidar_aug_matrix = lidar_aug_matrix[b] # not used?
-            cur_lidar2image = lidar2img[b].float()
-
-            # lidar2image
-            cur_coords = cur_lidar2image[:, :3, :3].matmul(cur_coords) #投影到6个相机上
-            cur_coords += cur_lidar2image[:, :3, 3].reshape(-1, 3, 1) # ?
-            # get 2d coords
-            dist = cur_coords[:, 2, :] # 相机坐标系下的深度
-            cur_coords[:, 2, :] = torch.clamp(cur_coords[:, 2, :], 1e-5, 1e5)
-            cur_coords[:, :2, :] /= cur_coords[:, 2:3, :] # 这都是投影到图像上的点了
-
-            # imgaug
-            # cur_coords = cur_img_aug_matrix[:, :3, :3].matmul(cur_coords) # todo?
-            # cur_coords += cur_img_aug_matrix[:, :3, 3].reshape(-1, 3, 1)
-            cur_coords = cur_coords[:, :2, :].transpose(1, 2)
-
-            # normalize coords for grid sample
-            cur_coords = cur_coords[..., [1, 0]]
-
-            on_img = (
-                (cur_coords[..., 0] < self.image_size[0])
-                & (cur_coords[..., 0] >= 0)
-                & (cur_coords[..., 1] < self.image_size[1])
-                & (cur_coords[..., 1] >= 0)
-            )
-            for c in range(num_cam):
-                masked_coords = cur_coords[c, on_img[c]].long()
-                masked_dist = dist[c, on_img[c]]
-                depth[b, c, 0, masked_coords[:, 0], masked_coords[:, 1]] = masked_dist
-
-        depth_resize_list = []
-        for i in range(batch_size):
-            out = F.interpolate(depth[i], (self.feature_size[0]*4, self.feature_size[1]*4), mode='bilinear', align_corners=False)
-            depth_resize_list.append(out)
-            
-        depth = torch.stack(depth_resize_list)
-
-        img_feat, depth_prob = self.get_feats_depth(img_feats, depth)   
-        # B, N, C, fH, fW = img_feats.shape
-        # img_feat = img_feats.view(B * N, C, fH, fW)
-
-        dtype = img_feat.dtype
         ref_2d = self.get_reference_points(self.bev_h, self.bev_w, 1, 
-        bs=batch_size, device=img_feat.device, dtype=dtype)
+        bs=batch_size, device=device, dtype=dtype)
         
         ref_3d = torch.cat((ref_2d, torch.ones_like(ref_2d[..., :1])*0.55), -1)
 
@@ -668,7 +674,7 @@ class HeightDepthFusion(HeightDepthTransform):
         #B, HW, C
 
         for ihr in self.ihr_layers:
-            output, ref_points = ihr(img_feat, pts_feats, rad_feats, bev_queries, bev_pos, ref_3d, self.pc_range, lidar2img, self.bev_h, self.bev_w, depth_prob, img_metas, **kwargs)
+            output, ref_points = ihr(img_feat, pts_feats, rad_feats, bev_queries, bev_pos, ref_3d, self.pc_range, lidar2img, self.bev_h, self.bev_w, None, img_metas, **kwargs)
             bev_queries = output 
             ref_3d = ref_points
         output = output.permute(0, 2, 1).contiguous().view(batch_size, -1, self.bev_h, self.bev_w)
