@@ -28,6 +28,17 @@ def analysis_raw_label_number(data_root):
     print(data_root, len(os.listdir(data_root)), lable_num_dict)
         
 
+def generate_mini_pkl(data_root, pkl_name):
+    pkl_name=os.path.join(data_root, pkl_name)
+
+    pkl_file = open(pkl_name, 'rb')
+    data = pickle.load(pkl_file)
+    
+    #generate mini dataset pkl
+    with open(os.path.join(data_root, pkl_name.split('.')[0]+"_mini"+'.pkl'), 'wb') as f:
+        pickle.dump(data[0:10], f)
+        
+
 def analysis_pkl(data_root, pkl_name):
     lable_num_dict = defaultdict(int)
     pkl_name=os.path.join(data_root, pkl_name)
@@ -36,7 +47,7 @@ def analysis_pkl(data_root, pkl_name):
     data = pickle.load(pkl_file)
     
     #generate mini dataset pkl
-    with open(os.path.join(data_root, "mini_data_file.pkl"), 'wb') as f:
+    with open(os.path.join(data_root, pkl_name.split('.')[0]+"_mini"+'.pkl'), 'wb') as f:
         pickle.dump(data[0:10], f)
     
     shape_dict = defaultdict(int)
@@ -54,6 +65,12 @@ def analysis_pkl(data_root, pkl_name):
 #l3
 # l3_benchmark_root = '/mnt/intel/jupyterhub/swc/datasets/L4E_extracted_data_1227/L4E_origin_benchmark/'
 # analysis_pkl(l3_benchmark_root, 'Kitti_L4_lc_data_mm3d_infos_val_5314.pkl')
+
+generate_mini_pkl('/mnt/intel/jupyterhub/mrb/datasets/L4E_origin_data/', 'L4_data_infos_train.pkl')
+generate_mini_pkl('/mnt/jupyterhub/mrb/plus/pc_label_trainval/L4E_origin_data', 'L4_data_infos_val.pkl')
+generate_mini_pkl('/mnt/jupyterhub/mrb/plus/pc_label_trainval/L4E_origin_benchmark', 'L4_data_infos_test.pkl')
+generate_mini_pkl('/mnt/intel/jupyterhub/mrb/datasets/L4E_origin_data/', 'Kitti_L4_lc_data_mm3d_infos_train_12321.pkl')
+
 
 analysis_raw_label_number('/mnt/intel/jupyterhub/mrb/mnt/pc_label_trainval/L4E_origin_data/training/label')
 analysis_raw_label_number('/mnt/intel/jupyterhub/swc/datasets/L4E_extracted_data_1227/L4E_origin_data/training/label')
