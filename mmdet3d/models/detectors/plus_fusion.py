@@ -132,9 +132,6 @@ class PlusFusion(MVXTwoStageDetector):
         if num_augs == 1:
             img = [img] if img is None else img
             radar =[radar] if radar is None else radar
-            img_feature =[img_feature] if img_feature is None else img_feature
-            side_img_feature =[side_img_feature] if side_img_feature is None else side_img_feature
-            rear_img_feature =[rear_img_feature] if rear_img_feature is None else rear_img_feature
             
             offline_img_features = [img_feature[0]]
             if side_img_feature is not None:
